@@ -206,7 +206,7 @@ void ImageResizer::dropEvent(QDropEvent *event)
     {
         QString filePath = mimeData->urls().at(0).toLocalFile();
         currentImagePath = filePath;
-        inputImage = cv::imread(filePath.toStdString());
+        inputImage = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
         if (!inputImage.empty())
         {
             displayImage(inputImage, inputImageLabel);
@@ -231,13 +231,16 @@ void ImageResizer::loadImage()
     }
 
     QString filePath = QFileDialog::getOpenFileName(this,
-                                                    "选择图片", "", "图片文件 (*.png *.jpg *.bmp)");
+                                                    "选择图片", "", "图片文件 (*.png *.jpg *.bmp *.tiff *.exr)");
     if (!filePath.isEmpty())
     {
-        originalImage = cv::imread(filePath.toStdString());
+        originalImage = cv::imread(filePath.toStdString(), cv::IMREAD_UNCHANGED);
         inputImage = originalImage.clone();
         isGrayscale = false;
         convertToGrayButton->setText("转换为灰度图");
+        // 启用灰度按钮
+        convertToGrayButton->setEnabled(true);
+        
         if (!inputImage.empty())
         {
             displayImage(inputImage, inputImageLabel);
@@ -274,6 +277,9 @@ void ImageResizer::processImage()
         QMessageBox::warning(this, "错误", "请先加载图片！");
         return;
     }
+
+    // 重置进度条
+    progressBar->setValue(0);
 
     if (algorithmSelector->currentIndex() == 7) // 性能对比
     {
@@ -522,7 +528,7 @@ void ImageResizer::processImage()
             outputImage = opencvResize(inputImage, new_width, new_height, cv::INTER_NEAREST);
             break;
         case 2: // 最近邻(FFmpeg)
-            
+
             outputImage = ffmpegResize(inputImage, new_width, new_height, true);
             break;
         case 3: // 双线性(自实现)
@@ -602,7 +608,6 @@ void ImageResizer::convertToGray()
             convertToGrayButton->setText("已经是灰度图");
             // 禁止点击
             convertToGrayButton->setEnabled(false);
-
         }
     }
     catch (const cv::Exception &e)
@@ -721,7 +726,8 @@ cv::Mat ImageResizer::bilinearResizeParallel(const cv::Mat &input_image, int out
     cv::Mat output_image(output_height, output_width, input_image.type());
     using namespace cv;
     using namespace std;
-    parallel_for_(Range(0, output_height), [&](const Range &range) {
+    parallel_for_(Range(0, output_height), [&](const Range &range)
+                  {
         for (int y_dst = range.start; y_dst < range.end; ++y_dst) {
             double y_src = (y_dst + 0.5) * scale_height - 0.5;
             int y0 = static_cast<int>(floor(y_src));
@@ -773,8 +779,7 @@ cv::Mat ImageResizer::bilinearResizeParallel(const cv::Mat &input_image, int out
                     }
                 }
             }
-        }
-    });
+        } });
 
     return output_image;
 }
@@ -795,19 +800,25 @@ cv::Mat ImageResizer::opencvResize(const cv::Mat &input_image, int output_width,
     return output_image;
 }
 
-cv::Mat ImageResizer::ffmpegResize(const cv::Mat& input, int newWidth, int newHeight, bool useNearest)
+cv::Mat ImageResizer::ffmpegResize(const cv::Mat &input, int newWidth, int newHeight, bool useNearest)
 {
-    if (input.empty()) {
+    if (input.empty())
+    {
         return cv::Mat();
     }
 
     // 确定输入格式
     AVPixelFormat input_pix_fmt;
-    if (input.channels() == 1) {
+    if (input.channels() == 1)
+    {
         input_pix_fmt = AV_PIX_FMT_GRAY8;
-    } else if (input.channels() == 3) {
+    }
+    else if (input.channels() == 3)
+    {
         input_pix_fmt = AV_PIX_FMT_BGR24;
-    } else {
+    }
+    else
+    {
         throw std::runtime_error("不支持的图像格式");
     }
 
@@ -815,14 +826,14 @@ cv::Mat ImageResizer::ffmpegResize(const cv::Mat& input, int newWidth, int newHe
     AVPixelFormat output_pix_fmt = input_pix_fmt;
 
     // 创建转换上下文
-    SwsContext* sws_ctx = sws_getContext(
+    SwsContext *sws_ctx = sws_getContext(
         input.cols, input.rows, input_pix_fmt,
         newWidth, newHeight, output_pix_fmt,
         useNearest ? SWS_POINT : SWS_BILINEAR,
-        nullptr, nullptr, nullptr
-    );
+        nullptr, nullptr, nullptr);
 
-    if (!sws_ctx) {
+    if (!sws_ctx)
+    {
         throw std::runtime_error("无法创建FFmpeg缩放上下文");
     }
 
@@ -830,10 +841,10 @@ cv::Mat ImageResizer::ffmpegResize(const cv::Mat& input, int newWidth, int newHe
     cv::Mat output(newHeight, newWidth, input.type());
 
     // 设置数据指针
-    const uint8_t* srcSlice[4] = {input.data, nullptr, nullptr, nullptr};
+    const uint8_t *srcSlice[4] = {input.data, nullptr, nullptr, nullptr};
     int srcStride[4] = {static_cast<int>(input.step[0]), 0, 0, 0};
-    
-    uint8_t* dstSlice[4] = {output.data, nullptr, nullptr, nullptr};
+
+    uint8_t *dstSlice[4] = {output.data, nullptr, nullptr, nullptr};
     int dstStride[4] = {static_cast<int>(output.step[0]), 0, 0, 0};
 
     // 执行缩放
@@ -848,37 +859,38 @@ cv::Mat ImageResizer::ffmpegResize(const cv::Mat& input, int newWidth, int newHe
 
 cv::Mat ImageResizer::simdResize(const cv::Mat &input_image, int output_width, int output_height)
 {
-    // 检查平台SIMD支持
-    #if defined(__x86_64__) || defined(_M_X64)
-        // x86_64架构
-        #if CV_SIMD128
-            const int vec_size = cv::v_uint8::nlanes;
-        #else
-            const int vec_size = 1;  // 降级到标量处理
-        #endif
-    #elif defined(__aarch64__) || defined(_M_ARM64)
-        // ARM64架构
-        #if CV_SIMD128
-            const int vec_size = cv::v_uint8::nlanes;
-        #else
-            const int vec_size = 1;
-        #endif
-    #else
-        // 其他平台降级到标量处理
-        const int vec_size = 1;
-    #endif
+// 检查平台SIMD支持
+#if defined(__x86_64__) || defined(_M_X64)
+// x86_64架构
+#if CV_SIMD128
+    const int vec_size = cv::v_uint8::nlanes;
+#else
+    const int vec_size = 1; // 降级到标量处理
+#endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+// ARM64架构
+#if CV_SIMD128
+    const int vec_size = cv::v_uint8::nlanes;
+#else
+    const int vec_size = 1;
+#endif
+#else
+    // 其他平台降级到标量处理
+    const int vec_size = 1;
+#endif
 
     cv::Mat output_image(output_height, output_width, CV_8UC1);
     double scale_width = static_cast<double>(input_image.cols) / output_width;
     double scale_height = static_cast<double>(input_image.rows) / output_height;
 
     // 根据SIMD支持选择处理方式
-    if (vec_size > 1) {
+    if (vec_size > 1)
+    {
         // 使用SIMD的处理逻辑
         int vec_size = cv::v_uint8::nlanes;
 
         cv::parallel_for_(cv::Range(0, output_height), [&](const cv::Range &range)
-                        {
+                          {
             for (int y_dst = range.start; y_dst < range.end; ++y_dst) {
                 uchar *output_row = output_image.ptr<uchar>(y_dst);
                 int y_src = static_cast<int>(y_dst * scale_height + 0.5);
@@ -902,9 +914,12 @@ cv::Mat ImageResizer::simdResize(const cv::Mat &input_image, int output_width, i
                     output_row[x_dst] = input_row[x_src];
                 }
             } });
-    } else {
+    }
+    else
+    {
         // 降级到标量处理
-        cv::parallel_for_(cv::Range(0, output_height), [&](const cv::Range &range) {
+        cv::parallel_for_(cv::Range(0, output_height), [&](const cv::Range &range)
+                          {
             for (int y_dst = range.start; y_dst < range.end; ++y_dst) {
                 uchar *output_row = output_image.ptr<uchar>(y_dst);
                 int y_src = static_cast<int>(y_dst * scale_height + 0.5);
@@ -916,8 +931,7 @@ cv::Mat ImageResizer::simdResize(const cv::Mat &input_image, int output_width, i
                     x_src = std::min(std::max(x_src, 0), input_image.cols - 1);
                     output_row[x_dst] = input_row[x_src];
                 }
-            }
-        });
+            } });
     }
 
     return output_image;

@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+
 # 添加 FFmpeg 头文件查找
 find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h)
 find_path(AVFORMAT_INCLUDE_DIR libavformat/avformat.h)
